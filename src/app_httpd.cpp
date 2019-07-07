@@ -23,6 +23,11 @@
 #include "dl_lib.h"
 #include "fr_forward.h"
 
+#include "driver/sdmmc_host.h"
+#include "driver/sdmmc_defs.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
+
 #define ENROLL_CONFIRM_TIMES 5
 #define FACE_ID_SAVE_NUMBER 7
 
@@ -62,7 +67,36 @@ static int8_t detection_enabled = 0;
 static int8_t recognition_enabled = 0;
 static int8_t is_enrolling = 0;
 static face_id_list id_list = {0};
+static bool is_init_sdcard = false;
 
+static void init_sdcard()
+{
+    if (is_init_sdcard)
+    {
+        return;
+    }
+    esp_err_t ret = ESP_FAIL;
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 3,
+    };
+    sdmmc_card_t *card;
+
+    ESP_LOGI(TAG, "Mounting SD card...");
+    ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+
+    if (ret == ESP_OK)
+    {
+        ESP_LOGI(TAG, "SD card mount successfully!");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to mount SD card VFAT filesystem. Error: %s", esp_err_to_name(ret));
+    }
+    is_init_sdcard = true;
+}
 static ra_filter_t * ra_filter_init(ra_filter_t * filter, size_t sample_size){
     memset(filter, 0, sizeof(ra_filter_t));
 
@@ -227,6 +261,24 @@ static esp_err_t capture_handler(httpd_req_t *req){
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
+    
+    init_sdcard();
+    int64_t timestamp = esp_timer_get_time();
+
+    char *pic_name = (char *)malloc(17 + sizeof(int64_t));
+    sprintf(pic_name, "/sdcard/pic_%lli.jpg", timestamp);
+    FILE *file = fopen(pic_name, "w");
+    if (file != NULL)
+    {
+      size_t err = fwrite(fb->buf, 1, fb->len, file);
+      ESP_LOGI(TAG, "File saved: %s", pic_name);
+    }
+    else
+    {
+      ESP_LOGE(TAG, "Could not open file =(");
+    }
+    fclose(file);
+    free(pic_name);
 
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
